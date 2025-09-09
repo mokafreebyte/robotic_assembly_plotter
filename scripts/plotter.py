@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import yaml
+import logging
 from datetime import datetime
 
 # =====================
@@ -18,7 +19,38 @@ from datetime import datetime
 DEFAULT_DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data'))
 DEFAULT_RESULTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../results'))
 DEFAULT_PLOTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../plots'))
-DEFAULT_SAMPLING_FREQ = 100.0  # Hz, adjust based on your data collection rate
+DEFAULT_CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.yaml')
+
+# Setup logging
+def setup_logging(verbosity):
+	"""Setup logging based on verbosity level"""
+	levels = {
+		0: logging.WARNING,
+		1: logging.INFO, 
+		2: logging.DEBUG
+	}
+	level = levels.get(verbosity, logging.DEBUG)
+	
+	logging.basicConfig(
+		level=level,
+		format='%(levelname)s: %(message)s',
+		handlers=[logging.StreamHandler(sys.stdout)]
+	)
+	return logging.getLogger(__name__)
+
+def load_config(config_file):
+	"""Load configuration from YAML file"""
+	try:
+		with open(config_file, 'r') as f:
+			config = yaml.safe_load(f)
+		logging.info(f"Loaded configuration from {config_file}")
+		return config
+	except FileNotFoundError:
+		logging.warning(f"Config file {config_file} not found, using defaults")
+		return {}
+	except yaml.YAMLError as e:
+		logging.error(f"Error parsing config file {config_file}: {e}")
+		return {}
 
 def list_csv_files(data_dir):
 	return sorted(glob.glob(os.path.join(data_dir, '*.csv')))
@@ -26,11 +58,15 @@ def list_csv_files(data_dir):
 def list_yaml_files(results_dir):
 	return sorted(glob.glob(os.path.join(results_dir, '*.yaml')))
 
-def plot_pose_force(files):
+def plot_pose_force(files, config):
 	"""
 	Plot ee_pose_lin_x over time and norm of measured forces on a secondary y-axis.
 	"""
+	sampling_freq = config.get('data', {}).get('default_sampling_freq', 100.0)
+	plot_config = config.get('plotting', {})
+	
 	for file in files:
+		logging.info(f"Processing file: {file}")
 		df = pd.read_csv(file)
 		
 		# Create proper time axis - handle duplicate timestamps
@@ -38,35 +74,46 @@ def plot_pose_force(files):
 			# Check if we have duplicate timestamps
 			time_values = df['time'].values
 			if len(np.unique(time_values)) < len(time_values):
-				print(f"[INFO] Detected duplicate timestamps in {file}, creating sequential time axis")
+				logging.info(f"Detected duplicate timestamps in {file}, creating sequential time axis")
 				# Create time axis assuming constant sampling rate
-				time = np.arange(len(df)) / DEFAULT_SAMPLING_FREQ  # Convert to seconds
+				time = np.arange(len(df)) / sampling_freq  # Convert to seconds
 			else:
 				time = df['time'] - df['time'].iloc[0]  # Start from 0
+				logging.debug(f"Using original timestamps from {file}")
 		else:
 			# Fallback: create sequential time assuming default sampling frequency
-			time = np.arange(len(df)) / DEFAULT_SAMPLING_FREQ
+			time = np.arange(len(df)) / sampling_freq
+			logging.debug(f"No time column found, creating sequential time axis")
 			
 		pose_x = df.get('ee_pose_lin_x', None)
 		fx = df.get('fts_wrench_lin_x', None)
 		fy = df.get('fts_wrench_lin_y', None)
 		fz = df.get('fts_wrench_lin_z', None)
 		if pose_x is None or fx is None or fy is None or fz is None:
-			print(f"[WARN] Missing columns in {file}, skipping.")
+			logging.warning(f"Missing columns in {file}, skipping.")
 			continue
 		force_norm = np.sqrt(fx**2 + fy**2 + fz**2)
-		fig, ax1 = plt.subplots(figsize=(12, 6))
+		
+		# Get plotting parameters from config
+		fig_size = plot_config.get('figure_size', [12, 6])
+		line_width = plot_config.get('line_width', 1.0)
+		grid_alpha = plot_config.get('grid_alpha', 0.3)
+		colors = plot_config.get('colors', {})
+		pose_color = colors.get('pose', 'blue')
+		force_color = colors.get('force', 'red')
+		
+		fig, ax1 = plt.subplots(figsize=fig_size)
 		ax1.set_title(f"ee_pose_lin_x and Force Norm\n{os.path.basename(file)}")
-		ax1.plot(time, pose_x, 'b-', label='ee_pose_lin_x', linewidth=1)
+		ax1.plot(time, pose_x, color=pose_color, label='ee_pose_lin_x', linewidth=line_width)
 		ax1.set_xlabel('Time [s]')
-		ax1.set_ylabel('ee_pose_lin_x [m]', color='b')
-		ax1.tick_params(axis='y', labelcolor='b')
-		ax1.grid(True, alpha=0.3)
+		ax1.set_ylabel('ee_pose_lin_x [m]', color=pose_color)
+		ax1.tick_params(axis='y', labelcolor=pose_color)
+		ax1.grid(True, alpha=grid_alpha)
 		
 		ax2 = ax1.twinx()
-		ax2.plot(time, force_norm, 'r-', label='Force Norm', linewidth=1)
-		ax2.set_ylabel('Force Norm [N]', color='r')
-		ax2.tick_params(axis='y', labelcolor='r')
+		ax2.plot(time, force_norm, color=force_color, label='Force Norm', linewidth=line_width)
+		ax2.set_ylabel('Force Norm [N]', color=force_color)
+		ax2.tick_params(axis='y', labelcolor=force_color)
 		
 		# Add legends
 		lines1, labels1 = ax1.get_legend_handles_labels()
@@ -74,66 +121,160 @@ def plot_pose_force(files):
 		ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
 		
 		fig.tight_layout()
+		
+		# Handle plot display and saving
+		file_config = config.get('files', {})
 		try:
 			plt.show()
 		except Exception as e:
-			print(f"[ERROR] Failed to show plot for {file}: {e}. Saving to {DEFAULT_PLOTS_DIR}.")
+			logging.error(f"Failed to show plot for {file}: {e}")
 
-		# Save da plot
-		if not os.path.exists(DEFAULT_PLOTS_DIR):
-			os.makedirs(DEFAULT_PLOTS_DIR)
-		run_folder = os.path.join(DEFAULT_PLOTS_DIR, datetime.now().strftime('%Y-%m-%d_%H-%M'))
-		if not os.path.exists(run_folder):
-			os.makedirs(run_folder)
-		plot_filename = os.path.join(run_folder, os.path.basename(file).replace('.csv', '_pose_force.png'))
-		fig.savefig(plot_filename)
+		# Save plot if enabled
+		if file_config.get('auto_save_plots', True):
+			if not os.path.exists(DEFAULT_PLOTS_DIR):
+				os.makedirs(DEFAULT_PLOTS_DIR)
+			
+			if file_config.get('timestamp_plots', True):
+				run_folder = os.path.join(DEFAULT_PLOTS_DIR, datetime.now().strftime('%Y-%m-%d_%H-%M'))
+				if not os.path.exists(run_folder):
+					os.makedirs(run_folder)
+			else:
+				run_folder = DEFAULT_PLOTS_DIR
+				
+			plot_format = file_config.get('plot_format', 'png')
+			plot_filename = os.path.join(run_folder, os.path.basename(file).replace('.csv', f'_pose_force.{plot_format}'))
+			
+			dpi = plot_config.get('dpi', 100)
+			fig.savefig(plot_filename, dpi=dpi, bbox_inches='tight')
+			logging.info(f"Saved plot to {plot_filename}")
+		
+		plt.close(fig)  # Free memory
 
-def plot_trajectory(files):
+def plot_trajectory(files, config):
 	"""
 	3D plot of trajectories using ee_pose_lin_x, ee_pose_lin_y, ee_pose_lin_z, colored by position norm.
 	"""
 	from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-	fig = plt.figure()
+	
+	plot_config = config.get('plotting', {})
+	traj_config = plot_config.get('trajectory', {})
+	colors = plot_config.get('colors', {})
+	
+	fig = plt.figure(figsize=plot_config.get('figure_size', [12, 8]))
 	ax = fig.add_subplot(111, projection='3d')
+	
 	for file in files:
+		logging.info(f"Processing trajectory file: {file}")
 		df = pd.read_csv(file)
 		x = df.get('ee_pose_lin_x', None)
 		y = df.get('ee_pose_lin_y', None)
 		z = df.get('ee_pose_lin_z', None)
 		if x is None or y is None or z is None:
-			print(f"[WARN] Missing columns in {file}, skipping.")
+			logging.warning(f"Missing columns in {file}, skipping.")
 			continue
 		pos_norm = np.sqrt(x**2 + y**2 + z**2)
-		p = ax.scatter(x, y, z, c=pos_norm, cmap='viridis', label=os.path.basename(file), s=2)
+		
+		point_size = traj_config.get('point_size', 2)
+		alpha = traj_config.get('alpha', 0.7)
+		colormap = colors.get('trajectory', 'viridis')
+		
+		p = ax.scatter(x, y, z, c=pos_norm, cmap=colormap, 
+					  label=os.path.basename(file), s=point_size, alpha=alpha)
+	
 	ax.set_xlabel('ee_pose_lin_x')
 	ax.set_ylabel('ee_pose_lin_y')
 	ax.set_zlabel('ee_pose_lin_z')
 	fig.colorbar(p, ax=ax, label='Position Norm')
 	ax.set_title('3D Trajectories (colored by position norm)')
-	plt.show()
+	
+	# Handle plot display and saving
+	file_config = config.get('files', {})
+	try:
+		plt.show()
+	except Exception as e:
+		logging.error(f"Failed to show 3D trajectory plot: {e}")
 
-def analyze_results(files):
+	# Save plot if enabled
+	if file_config.get('auto_save_plots', True):
+		if not os.path.exists(DEFAULT_PLOTS_DIR):
+			os.makedirs(DEFAULT_PLOTS_DIR)
+		
+		if file_config.get('timestamp_plots', True):
+			run_folder = os.path.join(DEFAULT_PLOTS_DIR, datetime.now().strftime('%Y-%m-%d_%H-%M'))
+			if not os.path.exists(run_folder):
+				os.makedirs(run_folder)
+		else:
+			run_folder = DEFAULT_PLOTS_DIR
+			
+		plot_format = file_config.get('plot_format', 'png')
+		plot_filename = os.path.join(run_folder, f'trajectory_3d.{plot_format}')
+		
+		dpi = plot_config.get('dpi', 100)
+		fig.savefig(plot_filename, dpi=dpi, bbox_inches='tight')
+		logging.info(f"Saved 3D trajectory plot to {plot_filename}")
+	
+	plt.close(fig)  # Free memory
+
+def analyze_results(files, config):
 	"""
 	Compute success rate and average time from YAML result files.
 	"""
+	analysis_config = config.get('analysis', {})
+	success_keywords = analysis_config.get('success_keywords', ['success', 'completed', 'finished'])
+	time_keywords = analysis_config.get('time_keywords', ['required_time', 'duration', 'time'])
+	
 	n_success = 0
 	n_total = 0
 	times = []
+	
 	for file in files:
-		with open(file, 'r') as f:
-			data = yaml.safe_load(f)
-		outcome = data.get('outcome', None)
-		time = data.get('required_time', None)
+		logging.debug(f"Analyzing result file: {file}")
+		try:
+			with open(file, 'r') as f:
+				data = yaml.safe_load(f)
+		except Exception as e:
+			logging.error(f"Failed to load YAML file {file}: {e}")
+			continue
+			
+		# Check for outcome/success
+		outcome = None
+		for key in ['outcome', 'result', 'status', 'result_case']:
+			if key in data:
+				outcome = str(data[key]).lower()
+				break
+				
 		if outcome is not None:
 			n_total += 1
-			if outcome == 'success':
+			if any(keyword in outcome for keyword in success_keywords):
 				n_success += 1
-		if time is not None:
-			times.append(time)
+				logging.debug(f"File {file}: SUCCESS")
+			else:
+				logging.debug(f"File {file}: FAILURE ({outcome})")
+		
+		# Check for time
+		time_value = None
+		for key in time_keywords:
+			if key in data:
+				time_value = data[key]
+				break
+				
+		if time_value is not None:
+			try:
+				times.append(float(time_value))
+				logging.debug(f"File {file}: time = {time_value}")
+			except (ValueError, TypeError):
+				logging.warning(f"Invalid time value in {file}: {time_value}")
+	
 	success_rate = (n_success / n_total * 100) if n_total > 0 else 0
 	avg_time = np.mean(times) if times else float('nan')
+	
+	logging.info("=== ANALYSIS RESULTS ===")
 	print(f"Success rate: {success_rate:.1f}% ({n_success}/{n_total})")
 	print(f"Average time: {avg_time:.2f} s")
+	if times:
+		print(f"Min time: {np.min(times):.2f} s")
+		print(f"Max time: {np.max(times):.2f} s")
+		print(f"Std time: {np.std(times):.2f} s")
 
 def main():
 	parser = argparse.ArgumentParser(description='Plotter and analysis for robotic insertion logs')
@@ -141,31 +282,34 @@ def main():
 	parser.add_argument('--data_dir', type=str, default=DEFAULT_DATA_DIR, help='Directory with CSV data files')
 	parser.add_argument('--results_dir', type=str, default=DEFAULT_RESULTS_DIR, help='Directory with YAML result files')
 	parser.add_argument('--files', nargs='*', default=None, help='Specific files to use (overrides data_dir/results_dir)')
-	parser.add_argument('--sampling_freq', type=float, default=DEFAULT_SAMPLING_FREQ, help='Sampling frequency in Hz (for time axis when timestamps are duplicate)')
+	parser.add_argument('--config', type=str, default=DEFAULT_CONFIG_FILE, help='Configuration YAML file')
+	parser.add_argument('-v', '--verbose', action='count', default=0, help='Increase verbosity level (use -v, -vv, or -vvv)')
 	args = parser.parse_args()
 	
-	# Update global sampling frequency
-	global DEFAULT_SAMPLING_FREQ
-	DEFAULT_SAMPLING_FREQ = args.sampling_freq
-
+	# Setup logging based on verbosity
+	logger = setup_logging(args.verbose)
+	
+	# Load configuration
+	config = load_config(args.config)
+	
 	if args.mode == 'plot_pose_force':
 		files = args.files if args.files else list_csv_files(args.data_dir)
 		if not files:
-			print(f"No CSV files found in {args.data_dir}")
+			logging.error(f"No CSV files found in {args.data_dir}")
 			return
-		plot_pose_force(files)
+		plot_pose_force(files, config)
 	elif args.mode == 'plot_trajectory':
 		files = args.files if args.files else list_csv_files(args.data_dir)
 		if not files:
-			print(f"No CSV files found in {args.data_dir}")
+			logging.error(f"No CSV files found in {args.data_dir}")
 			return
-		plot_trajectory(files)
+		plot_trajectory(files, config)
 	elif args.mode == 'analyze_results':
 		files = args.files if args.files else list_yaml_files(args.results_dir)
 		if not files:
-			print(f"No YAML files found in {args.results_dir}")
+			logging.error(f"No YAML files found in {args.results_dir}")
 			return
-		analyze_results(files)
+		analyze_results(files, config)
 
 if __name__ == '__main__':
 	main()

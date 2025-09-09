@@ -1,0 +1,35 @@
+# Configuration file for robotic insertion log plotter
+# Adjust these parameters according to your data and preferences
+
+# Data processing parameters
+data:
+  default_sampling_freq: 100.0  # Hz - sampling frequency for time axis reconstruction
+  
+# Plotting parameters
+plotting:
+  figure_size: [12, 6]  # [width, height] in inches
+  line_width: 1.0
+  grid_alpha: 0.3
+  dpi: 100
+  
+  # Colors for different plot elements
+  colors:
+    pose: 'blue'
+    force: 'red'
+    trajectory: 'viridis'  # colormap for 3D trajectories
+  
+  # 3D trajectory plot settings
+  trajectory:
+    point_size: 2
+    alpha: 0.7
+    
+# File handling
+files:
+  auto_save_plots: true
+  plot_format: 'png'  # png, pdf, svg
+  timestamp_plots: true  # Add timestamp to plot filenames
+  
+# Analysis parameters
+analysis:
+  success_keywords: ['success', 'completed', 'finished']  # Keywords that indicate success in YAML files
+  time_keywords: ['required_time', 'duration', 'time', 'trial_duration']  # Keywords for time values in YAML files
