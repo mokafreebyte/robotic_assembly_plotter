@@ -1,5 +1,16 @@
 # Configuration file for robotic insertion log plotter
 # Adjust these parameters according to your data and preferences
+#
+# Directory paths can be:
+# - Relative to script location (e.g., "../data")
+# - Absolute paths (e.g., "/home/user/data")
+# - Command line arguments override these settings
+
+# Directory paths (relative to script location or absolute paths)
+directories:
+  data_dir: "../data"           # Directory containing CSV data files
+  results_dir: "../results"     # Directory containing YAML result files  
+  plots_dir: "../plots"         # Directory where plots will be saved
 
 # Data processing parameters
 data:

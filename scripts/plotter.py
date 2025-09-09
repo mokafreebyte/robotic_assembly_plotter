@@ -16,10 +16,12 @@ from datetime import datetime
 # =====================
 # Default Variables
 # =====================
-DEFAULT_DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data'))
-DEFAULT_RESULTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../results'))
-DEFAULT_PLOTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../plots'))
 DEFAULT_CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.yaml')
+
+# Fallback defaults if config file is not available
+FALLBACK_DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data'))
+FALLBACK_RESULTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../results'))
+FALLBACK_PLOTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../plots'))
 
 # Setup logging
 def setup_logging(verbosity):
@@ -52,13 +54,35 @@ def load_config(config_file):
 		logging.error(f"Error parsing config file {config_file}: {e}")
 		return {}
 
+def get_directories_from_config(config):
+	"""Get directory paths from config, with fallbacks"""
+	script_dir = os.path.dirname(__file__)
+	dirs_config = config.get('directories', {})
+	
+	def resolve_path(path, fallback):
+		if path and not os.path.isabs(path):
+			# Relative path - make it relative to script directory
+			return os.path.abspath(os.path.join(script_dir, path))
+		elif path:
+			# Absolute path
+			return os.path.abspath(path)
+		else:
+			# Use fallback
+			return fallback
+	
+	data_dir = resolve_path(dirs_config.get('data_dir'), FALLBACK_DATA_DIR)
+	results_dir = resolve_path(dirs_config.get('results_dir'), FALLBACK_RESULTS_DIR)
+	plots_dir = resolve_path(dirs_config.get('plots_dir'), FALLBACK_PLOTS_DIR)
+	
+	return data_dir, results_dir, plots_dir
+
 def list_csv_files(data_dir):
 	return sorted(glob.glob(os.path.join(data_dir, '*.csv')))
 
 def list_yaml_files(results_dir):
 	return sorted(glob.glob(os.path.join(results_dir, '*.yaml')))
 
-def plot_pose_force(files, config):
+def plot_pose_force(files, config, plots_dir):
 	"""
 	Plot ee_pose_lin_x over time and norm of measured forces on a secondary y-axis.
 	"""
@@ -131,15 +155,15 @@ def plot_pose_force(files, config):
 
 		# Save plot if enabled
 		if file_config.get('auto_save_plots', True):
-			if not os.path.exists(DEFAULT_PLOTS_DIR):
-				os.makedirs(DEFAULT_PLOTS_DIR)
+			if not os.path.exists(plots_dir):
+				os.makedirs(plots_dir)
 			
 			if file_config.get('timestamp_plots', True):
-				run_folder = os.path.join(DEFAULT_PLOTS_DIR, datetime.now().strftime('%Y-%m-%d_%H-%M'))
+				run_folder = os.path.join(plots_dir, datetime.now().strftime('%Y-%m-%d_%H-%M'))
 				if not os.path.exists(run_folder):
 					os.makedirs(run_folder)
 			else:
-				run_folder = DEFAULT_PLOTS_DIR
+				run_folder = plots_dir
 				
 			plot_format = file_config.get('plot_format', 'png')
 			plot_filename = os.path.join(run_folder, os.path.basename(file).replace('.csv', f'_pose_force.{plot_format}'))
@@ -150,7 +174,7 @@ def plot_pose_force(files, config):
 		
 		plt.close(fig)  # Free memory
 
-def plot_trajectory(files, config):
+def plot_trajectory(files, config, plots_dir):
 	"""
 	3D plot of trajectories using ee_pose_lin_x, ee_pose_lin_y, ee_pose_lin_z, colored by position norm.
 	"""
@@ -159,9 +183,6 @@ def plot_trajectory(files, config):
 	plot_config = config.get('plotting', {})
 	traj_config = plot_config.get('trajectory', {})
 	colors = plot_config.get('colors', {})
-	
-	fig = plt.figure(figsize=plot_config.get('figure_size', [12, 8]))
-	ax = fig.add_subplot(111, projection='3d')
 	
 	for file in files:
 		logging.info(f"Processing trajectory file: {file}")
@@ -173,47 +194,46 @@ def plot_trajectory(files, config):
 			logging.warning(f"Missing columns in {file}, skipping.")
 			continue
 		pos_norm = np.sqrt(x**2 + y**2 + z**2)
-		
+
 		point_size = traj_config.get('point_size', 2)
 		alpha = traj_config.get('alpha', 0.7)
 		colormap = colors.get('trajectory', 'viridis')
-		
-		p = ax.scatter(x, y, z, c=pos_norm, cmap=colormap, 
-					  label=os.path.basename(file), s=point_size, alpha=alpha)
-	
-	ax.set_xlabel('ee_pose_lin_x')
-	ax.set_ylabel('ee_pose_lin_y')
-	ax.set_zlabel('ee_pose_lin_z')
-	fig.colorbar(p, ax=ax, label='Position Norm')
-	ax.set_title('3D Trajectories (colored by position norm)')
-	
-	# Handle plot display and saving
-	file_config = config.get('files', {})
-	try:
-		plt.show()
-	except Exception as e:
-		logging.error(f"Failed to show 3D trajectory plot: {e}")
+		fig = plt.figure(figsize=plot_config.get('figure_size', [12, 8]))
+		ax = fig.add_subplot(111, projection='3d')
+		p = ax.scatter(x, y, z, c=pos_norm, cmap=colormap, label=os.path.basename(file), s=point_size, alpha=alpha)
+		ax.set_xlabel('ee_pose_lin_x')
+		ax.set_ylabel('ee_pose_lin_y')
+		ax.set_zlabel('ee_pose_lin_z')
+		fig.colorbar(p, ax=ax, label='Position Norm')
+		ax.set_title(f'3D Trajectory (colored by position norm)\n{os.path.basename(file)}')
 
-	# Save plot if enabled
-	if file_config.get('auto_save_plots', True):
-		if not os.path.exists(DEFAULT_PLOTS_DIR):
-			os.makedirs(DEFAULT_PLOTS_DIR)
-		
-		if file_config.get('timestamp_plots', True):
-			run_folder = os.path.join(DEFAULT_PLOTS_DIR, datetime.now().strftime('%Y-%m-%d_%H-%M'))
-			if not os.path.exists(run_folder):
-				os.makedirs(run_folder)
-		else:
-			run_folder = DEFAULT_PLOTS_DIR
-			
-		plot_format = file_config.get('plot_format', 'png')
-		plot_filename = os.path.join(run_folder, f'trajectory_3d.{plot_format}')
-		
-		dpi = plot_config.get('dpi', 100)
-		fig.savefig(plot_filename, dpi=dpi, bbox_inches='tight')
-		logging.info(f"Saved 3D trajectory plot to {plot_filename}")
-	
-	plt.close(fig)  # Free memory
+		# Handle plot display and saving
+		file_config = config.get('files', {})
+		try:
+			plt.show()
+		except Exception as e:
+			logging.error(f"Failed to show 3D trajectory plot for {file}: {e}")
+
+		# Save plot if enabled
+		if file_config.get('auto_save_plots', True):
+			if not os.path.exists(plots_dir):
+				os.makedirs(plots_dir)
+
+			if file_config.get('timestamp_plots', True):
+				run_folder = os.path.join(plots_dir, datetime.now().strftime('%Y-%m-%d_%H-%M'))
+				if not os.path.exists(run_folder):
+					os.makedirs(run_folder)
+			else:
+				run_folder = plots_dir
+
+			plot_format = file_config.get('plot_format', 'png')
+			plot_filename = os.path.join(run_folder, os.path.basename(file).replace('.csv', f'_trajectory3d.{plot_format}'))
+
+			dpi = plot_config.get('dpi', 100)
+			fig.savefig(plot_filename, dpi=dpi, bbox_inches='tight')
+			logging.info(f"Saved 3D trajectory plot to {plot_filename}")
+
+		plt.close(fig)  # Free memory
 
 def analyze_results(files, config):
 	"""
@@ -268,7 +288,7 @@ def analyze_results(files, config):
 	success_rate = (n_success / n_total * 100) if n_total > 0 else 0
 	avg_time = np.mean(times) if times else float('nan')
 	
-	logging.info("=== ANALYSIS RESULTS ===")
+	print("=== ANALYSIS RESULTS ===")
 	print(f"Success rate: {success_rate:.1f}% ({n_success}/{n_total})")
 	print(f"Average time: {avg_time:.2f} s")
 	if times:
@@ -279,8 +299,9 @@ def analyze_results(files, config):
 def main():
 	parser = argparse.ArgumentParser(description='Plotter and analysis for robotic insertion logs')
 	parser.add_argument('mode', choices=['plot_pose_force', 'plot_trajectory', 'analyze_results'], help='Which function to run')
-	parser.add_argument('--data_dir', type=str, default=DEFAULT_DATA_DIR, help='Directory with CSV data files')
-	parser.add_argument('--results_dir', type=str, default=DEFAULT_RESULTS_DIR, help='Directory with YAML result files')
+	parser.add_argument('--data_dir', type=str, default=None, help='Directory with CSV data files (overrides config)')
+	parser.add_argument('--results_dir', type=str, default=None, help='Directory with YAML result files (overrides config)')
+	parser.add_argument('--plots_dir', type=str, default=None, help='Directory where plots will be saved (overrides config)')
 	parser.add_argument('--files', nargs='*', default=None, help='Specific files to use (overrides data_dir/results_dir)')
 	parser.add_argument('--config', type=str, default=DEFAULT_CONFIG_FILE, help='Configuration YAML file')
 	parser.add_argument('-v', '--verbose', action='count', default=0, help='Increase verbosity level (use -v, -vv, or -vvv)')
@@ -292,22 +313,31 @@ def main():
 	# Load configuration
 	config = load_config(args.config)
 	
+	# Get directories from config or use command line overrides
+	config_data_dir, config_results_dir, config_plots_dir = get_directories_from_config(config)
+	
+	data_dir = args.data_dir if args.data_dir else config_data_dir
+	results_dir = args.results_dir if args.results_dir else config_results_dir
+	plots_dir = args.plots_dir if args.plots_dir else config_plots_dir
+	
+	logging.debug(f"Using directories: data={data_dir}, results={results_dir}, plots={plots_dir}")
+	
 	if args.mode == 'plot_pose_force':
-		files = args.files if args.files else list_csv_files(args.data_dir)
+		files = args.files if args.files else list_csv_files(data_dir)
 		if not files:
-			logging.error(f"No CSV files found in {args.data_dir}")
+			logging.error(f"No CSV files found in {data_dir}")
 			return
-		plot_pose_force(files, config)
+		plot_pose_force(files, config, plots_dir)
 	elif args.mode == 'plot_trajectory':
-		files = args.files if args.files else list_csv_files(args.data_dir)
+		files = args.files if args.files else list_csv_files(data_dir)
 		if not files:
-			logging.error(f"No CSV files found in {args.data_dir}")
+			logging.error(f"No CSV files found in {data_dir}")
 			return
-		plot_trajectory(files, config)
+		plot_trajectory(files, config, plots_dir)
 	elif args.mode == 'analyze_results':
-		files = args.files if args.files else list_yaml_files(args.results_dir)
+		files = args.files if args.files else list_yaml_files(results_dir)
 		if not files:
-			logging.error(f"No YAML files found in {args.results_dir}")
+			logging.error(f"No YAML files found in {results_dir}")
 			return
 		analyze_results(files, config)
 
