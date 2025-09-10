@@ -228,12 +228,12 @@ def plot_trajectory(files, config, plots_dir):
 			time = np.arange(len(df)) / sampling_freq
 			logging.debug(f"No time column found, creating sequential time axis")
 
-		# Plot trajectory colored by time
+		# Plot trajectory colored by time (no label to avoid cluttering legend)
 		file_label = os.path.basename(file).replace('.csv', '')
-		p = ax.scatter(x, y, z, c=time, cmap=colormap, label=file_label, 
+		p = ax.scatter(x, y, z, c=time, cmap=colormap, 
 					  s=point_size, alpha=alpha)
 		
-		# Add start marker (triangle)
+		# Add start marker (triangle) - only these will appear in legend
 		marker_color = start_marker_colors[idx % len(start_marker_colors)]
 		ax.scatter(x.iloc[0], y.iloc[0], z.iloc[0], 
 				  c=marker_color, marker='^', s=50, alpha=1.0, 
@@ -244,12 +244,12 @@ def plot_trajectory(files, config, plots_dir):
 	ax.set_ylabel('ee_pose_lin_y [m]')
 	ax.set_zlabel('ee_pose_lin_z [m]')
 	
-	# Add colorbar for time
+	# Add colorbar for time - position it to avoid overlap with legend
 	if len(files_to_plot) > 0:
-		cbar = fig.colorbar(p, ax=ax, label='Time [s]', shrink=0.8)
+		cbar = fig.colorbar(p, ax=ax, label='Time [s]', shrink=0.6, pad=0.1)
 	
-	# Add legend and title
-	ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+	# Add legend - position it below the plot to avoid overlap with colorbar
+	ax.legend(bbox_to_anchor=(0.5, -0.05), loc='upper center', ncol=3)
 	
 	if len(files_to_plot) == 1:
 		ax.set_title(f'3D Trajectory (colored by time)\n{os.path.basename(files_to_plot[0])}')
