@@ -122,6 +122,37 @@ def load_and_process_trial(file, sampling_freq):
 		'force_norm': force_norm.values
 	}
 
+def trim_trial_duration(trial_data, max_duration):
+	"""Trim trial data to maximum duration."""
+	if max_duration is None or max_duration <= 0:
+		return trial_data
+	
+	time = trial_data['time']
+	max_time = time[0] + max_duration
+	
+	# Find the index where time exceeds max_duration
+	trim_indices = time <= max_time
+	
+	if not np.any(trim_indices):
+		logging.warning(f"Max duration {max_duration}s is shorter than trial start time")
+		return trial_data
+	
+	# Find the last valid index
+	last_valid_idx = np.where(trim_indices)[0][-1] + 1
+	
+	if last_valid_idx < len(time):
+		original_duration = time[-1] - time[0]
+		new_duration = time[last_valid_idx-1] - time[0]
+		logging.info(f"Trimming trial {os.path.basename(trial_data['file'])}: "
+					f"{original_duration:.2f}s -> {new_duration:.2f}s")
+	
+	return {
+		'file': trial_data['file'],
+		'time': time[:last_valid_idx],
+		'pose_x': trial_data['pose_x'][:last_valid_idx],
+		'force_norm': trial_data['force_norm'][:last_valid_idx]
+	}
+
 def align_trials_by_time(trials, interpolation_points):
 	"""Align trials by time using interpolation."""
 	if not trials:
@@ -215,6 +246,7 @@ def plot_pose_force(files, config, plots_dir):
 	interpolation_points = pose_force_config.get('interpolation_points', 1000)
 	show_std_bands = pose_force_config.get('std_dev_bands', True)
 	individual_alpha = pose_force_config.get('individual_alpha', 0.3)
+	max_duration = pose_force_config.get('max_duration', None)
 	
 	# Load all trials
 	logging.info(f"Loading {len(files)} trial files for multi-trial analysis")
@@ -222,6 +254,9 @@ def plot_pose_force(files, config, plots_dir):
 	for file in files:
 		trial_data = load_and_process_trial(file, sampling_freq)
 		if trial_data is not None:
+			# Apply duration trimming if configured
+			if max_duration is not None and max_duration > 0:
+				trial_data = trim_trial_duration(trial_data, max_duration)
 			all_trials.append(trial_data)
 	
 	if not all_trials:
