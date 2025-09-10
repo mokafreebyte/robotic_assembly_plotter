@@ -176,15 +176,33 @@ def plot_pose_force(files, config, plots_dir):
 
 def plot_trajectory(files, config, plots_dir):
 	"""
-	3D plot of trajectories using ee_pose_lin_x, ee_pose_lin_y, ee_pose_lin_z, colored by position norm.
+	3D plot of trajectories using ee_pose_lin_x, ee_pose_lin_y, ee_pose_lin_z, colored by time.
+	Supports plotting multiple trajectories (up to 5) with start markers.
 	"""
 	from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 	
 	plot_config = config.get('plotting', {})
 	traj_config = plot_config.get('trajectory', {})
 	colors = plot_config.get('colors', {})
+	sampling_freq = config.get('data', {}).get('default_sampling_freq', 100.0)
 	
-	for file in files:
+	# Limit to maximum 5 files for readability
+	files_to_plot = files[:5] if len(files) > 5 else files
+	if len(files) > 5:
+		logging.warning(f"Limiting to first 5 files for trajectory plotting. Total files: {len(files)}")
+	
+	# Create a single figure for all trajectories
+	fig = plt.figure(figsize=plot_config.get('figure_size', [12, 8]))
+	ax = fig.add_subplot(111, projection='3d')
+	
+	point_size = traj_config.get('point_size', 2)
+	alpha = traj_config.get('alpha', 0.7)
+	colormap = colors.get('trajectory', 'viridis')
+	
+	# Colors for start markers (distinct colors)
+	start_marker_colors = ['red', 'green', 'blue', 'orange', 'purple']
+	
+	for idx, file in enumerate(files_to_plot):
 		logging.info(f"Processing trajectory file: {file}")
 		df = pd.read_csv(file)
 		x = df.get('ee_pose_lin_x', None)
@@ -193,47 +211,85 @@ def plot_trajectory(files, config, plots_dir):
 		if x is None or y is None or z is None:
 			logging.warning(f"Missing columns in {file}, skipping.")
 			continue
-		pos_norm = np.sqrt(x**2 + y**2 + z**2)
-
-		point_size = traj_config.get('point_size', 2)
-		alpha = traj_config.get('alpha', 0.7)
-		colormap = colors.get('trajectory', 'viridis')
-		fig = plt.figure(figsize=plot_config.get('figure_size', [12, 8]))
-		ax = fig.add_subplot(111, projection='3d')
-		p = ax.scatter(x, y, z, c=pos_norm, cmap=colormap, label=os.path.basename(file), s=point_size, alpha=alpha)
-		ax.set_xlabel('ee_pose_lin_x')
-		ax.set_ylabel('ee_pose_lin_y')
-		ax.set_zlabel('ee_pose_lin_z')
-		fig.colorbar(p, ax=ax, label='Position Norm')
-		ax.set_title(f'3D Trajectory (colored by position norm)\n{os.path.basename(file)}')
-
-		# Handle plot display and saving
-		file_config = config.get('files', {})
-		try:
-			plt.show()
-		except Exception as e:
-			logging.error(f"Failed to show 3D trajectory plot for {file}: {e}")
-
-		# Save plot if enabled
-		if file_config.get('auto_save_plots', True):
-			if not os.path.exists(plots_dir):
-				os.makedirs(plots_dir)
-
-			if file_config.get('timestamp_plots', True):
-				run_folder = os.path.join(plots_dir, datetime.now().strftime('%Y-%m-%d_%H-%M'))
-				if not os.path.exists(run_folder):
-					os.makedirs(run_folder)
+		
+		# Create time axis
+		if 'time' in df.columns:
+			# Check if we have duplicate timestamps
+			time_values = df['time'].values
+			if len(np.unique(time_values)) < len(time_values):
+				logging.info(f"Detected duplicate timestamps in {file}, creating sequential time axis")
+				# Create time axis assuming constant sampling rate
+				time = np.arange(len(df)) / sampling_freq  # Convert to seconds
 			else:
-				run_folder = plots_dir
+				time = df['time'] - df['time'].iloc[0]  # Start from 0
+				logging.debug(f"Using original timestamps from {file}")
+		else:
+			# Fallback: create sequential time assuming default sampling frequency
+			time = np.arange(len(df)) / sampling_freq
+			logging.debug(f"No time column found, creating sequential time axis")
 
-			plot_format = file_config.get('plot_format', 'png')
-			plot_filename = os.path.join(run_folder, os.path.basename(file).replace('.csv', f'_trajectory3d.{plot_format}'))
+		# Plot trajectory colored by time
+		file_label = os.path.basename(file).replace('.csv', '')
+		p = ax.scatter(x, y, z, c=time, cmap=colormap, label=file_label, 
+					  s=point_size, alpha=alpha)
+		
+		# Add start marker (triangle)
+		marker_color = start_marker_colors[idx % len(start_marker_colors)]
+		ax.scatter(x.iloc[0], y.iloc[0], z.iloc[0], 
+				  c=marker_color, marker='^', s=50, alpha=1.0, 
+				  edgecolors='black', linewidth=1,
+				  label=f'{file_label} start')
+	
+	ax.set_xlabel('ee_pose_lin_x [m]')
+	ax.set_ylabel('ee_pose_lin_y [m]')
+	ax.set_zlabel('ee_pose_lin_z [m]')
+	
+	# Add colorbar for time
+	if len(files_to_plot) > 0:
+		cbar = fig.colorbar(p, ax=ax, label='Time [s]', shrink=0.8)
+	
+	# Add legend and title
+	ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+	
+	if len(files_to_plot) == 1:
+		ax.set_title(f'3D Trajectory (colored by time)\n{os.path.basename(files_to_plot[0])}')
+	else:
+		ax.set_title(f'3D Trajectories (colored by time)\n{len(files_to_plot)} trajectories')
 
-			dpi = plot_config.get('dpi', 100)
-			fig.savefig(plot_filename, dpi=dpi, bbox_inches='tight')
-			logging.info(f"Saved 3D trajectory plot to {plot_filename}")
+	# Handle plot display and saving
+	file_config = config.get('files', {})
+	try:
+		plt.show()
+	except Exception as e:
+		logging.error(f"Failed to show 3D trajectory plot: {e}")
 
-		plt.close(fig)  # Free memory
+	# Save plot if enabled
+	if file_config.get('auto_save_plots', True):
+		if not os.path.exists(plots_dir):
+			os.makedirs(plots_dir)
+
+		if file_config.get('timestamp_plots', True):
+			run_folder = os.path.join(plots_dir, datetime.now().strftime('%Y-%m-%d_%H-%M'))
+			if not os.path.exists(run_folder):
+				os.makedirs(run_folder)
+		else:
+			run_folder = plots_dir
+
+		plot_format = file_config.get('plot_format', 'png')
+		
+		if len(files_to_plot) == 1:
+			# Single file naming
+			plot_filename = os.path.join(run_folder, os.path.basename(files_to_plot[0]).replace('.csv', f'_trajectory3d.{plot_format}'))
+		else:
+			# Multiple files naming
+			timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+			plot_filename = os.path.join(run_folder, f'trajectories_3d_{timestamp}.{plot_format}')
+
+		dpi = plot_config.get('dpi', 100)
+		fig.savefig(plot_filename, dpi=dpi, bbox_inches='tight')
+		logging.info(f"Saved 3D trajectory plot to {plot_filename}")
+
+	plt.close(fig)  # Free memory
 
 def analyze_results(files, config):
 	"""
