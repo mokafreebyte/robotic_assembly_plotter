@@ -33,6 +33,7 @@ plotting:
   trajectory:
     point_size: 2
     alpha: 0.7
+    limit_files: false  # Limit to first 5 files for trajectory plots if more are present
     
 # File handling
 files:

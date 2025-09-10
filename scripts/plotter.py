@@ -186,10 +186,17 @@ def plot_trajectory(files, config, plots_dir):
 	colors = plot_config.get('colors', {})
 	sampling_freq = config.get('data', {}).get('default_sampling_freq', 100.0)
 	
-	# Limit to maximum 5 files for readability
-	files_to_plot = files[:5] if len(files) > 5 else files
-	if len(files) > 5:
-		logging.warning(f"Limiting to first 5 files for trajectory plotting. Total files: {len(files)}")
+	# Check if file limiting is enabled (default to True for backward compatibility)
+	limit_files = traj_config.get('limit_files', True)
+	
+	# Limit to maximum 5 files for readability if enabled
+	if limit_files and len(files) > 5:
+		files_to_plot = files[:5]
+		logging.warning(f"Limiting to first 5 files for trajectory plotting. Total files: {len(files)}. Set 'limit_files: false' in config to plot all.")
+	else:
+		files_to_plot = files
+		if len(files) > 5:
+			logging.info(f"Plotting all {len(files)} trajectory files as limit_files is disabled.")
 	
 	# Create a single figure for all trajectories
 	fig = plt.figure(figsize=plot_config.get('figure_size', [12, 8]))
@@ -238,7 +245,7 @@ def plot_trajectory(files, config, plots_dir):
 		ax.scatter(x.iloc[0], y.iloc[0], z.iloc[0], 
 				  c=marker_color, marker='^', s=50, alpha=1.0, 
 				  edgecolors='black', linewidth=1,
-				  label=f'{file_label} start')
+				  label=f'{file_label}')
 	
 	ax.set_xlabel('ee_pose_lin_x [m]')
 	ax.set_ylabel('ee_pose_lin_y [m]')
