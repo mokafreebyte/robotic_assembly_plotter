@@ -82,97 +82,266 @@ def list_csv_files(data_dir):
 def list_yaml_files(results_dir):
 	return sorted(glob.glob(os.path.join(results_dir, '*.yaml')))
 
+def load_and_process_trial(file, sampling_freq):
+	"""Load and process a single trial file."""
+	logging.debug(f"Loading trial file: {file}")
+	df = pd.read_csv(file)
+	
+	# Create proper time axis - handle duplicate timestamps
+	if 'time' in df.columns:
+		# Check if we have duplicate timestamps
+		time_values = df['time'].values
+		if len(np.unique(time_values)) < len(time_values):
+			logging.debug(f"Detected duplicate timestamps in {file}, creating sequential time axis")
+			# Create time axis assuming constant sampling rate
+			time = np.arange(len(df)) / sampling_freq  # Convert to seconds
+		else:
+			time = df['time'] - df['time'].iloc[0]  # Start from 0
+			logging.debug(f"Using original timestamps from {file}")
+	else:
+		# Fallback: create sequential time assuming default sampling frequency
+		time = np.arange(len(df)) / sampling_freq
+		logging.debug(f"No time column found, creating sequential time axis")
+	
+	# Extract required columns
+	pose_x = df.get('ee_pose_lin_x', None)
+	fx = df.get('fts_wrench_lin_x', None)
+	fy = df.get('fts_wrench_lin_y', None)
+	fz = df.get('fts_wrench_lin_z', None)
+	
+	if pose_x is None or fx is None or fy is None or fz is None:
+		logging.warning(f"Missing columns in {file}, skipping.")
+		return None
+	
+	force_norm = np.sqrt(fx**2 + fy**2 + fz**2)
+	
+	return {
+		'file': file,
+		'time': time,
+		'pose_x': pose_x.values,
+		'force_norm': force_norm.values
+	}
+
+def align_trials_by_time(trials, interpolation_points):
+	"""Align trials by time using interpolation."""
+	if not trials:
+		return [], None
+	
+	# Find common time range
+	max_duration = max(trial['time'].max() for trial in trials)
+	common_time = np.linspace(0, max_duration, interpolation_points)
+	
+	aligned_trials = []
+	for trial in trials:
+		# Interpolate to common time grid
+		pose_interp = np.interp(common_time, trial['time'], trial['pose_x'])
+		force_interp = np.interp(common_time, trial['time'], trial['force_norm'])
+		
+		aligned_trials.append({
+			'file': trial['file'],
+			'time': common_time,
+			'pose_x': pose_interp,
+			'force_norm': force_interp
+		})
+	
+	return aligned_trials, common_time
+
+def align_trials_by_distance(trials, interpolation_points):
+	"""Align trials by distance (pose position) using interpolation."""
+	if not trials:
+		return [], None
+	
+	# Find common pose range (intersection of all trials)
+	min_pose = max(trial['pose_x'].min() for trial in trials)
+	max_pose = min(trial['pose_x'].max() for trial in trials)
+	
+	if min_pose >= max_pose:
+		logging.error("No overlapping pose range found between trials for distance alignment")
+		return [], None
+	
+	common_distance = np.linspace(min_pose, max_pose, interpolation_points)
+	
+	aligned_trials = []
+	for trial in trials:
+		# Sort by pose_x for interpolation
+		sort_indices = np.argsort(trial['pose_x'])
+		sorted_pose = trial['pose_x'][sort_indices]
+		sorted_force = trial['force_norm'][sort_indices]
+		sorted_time = trial['time'][sort_indices]
+		
+		# Interpolate force and time based on pose position
+		force_interp = np.interp(common_distance, sorted_pose, sorted_force)
+		time_interp = np.interp(common_distance, sorted_pose, sorted_time)
+		
+		aligned_trials.append({
+			'file': trial['file'],
+			'distance': common_distance,
+			'pose_x': common_distance,
+			'force_norm': force_interp,
+			'time': time_interp
+		})
+	
+	return aligned_trials, common_distance
+
+def calculate_trial_statistics(aligned_trials):
+	"""Calculate mean and standard deviation across trials."""
+	if not aligned_trials:
+		return None, None, None, None
+	
+	# Stack data from all trials
+	pose_data = np.array([trial['pose_x'] for trial in aligned_trials])
+	force_data = np.array([trial['force_norm'] for trial in aligned_trials])
+	
+	# Calculate statistics
+	mean_pose = np.mean(pose_data, axis=0)
+	std_pose = np.std(pose_data, axis=0)
+	mean_force = np.mean(force_data, axis=0)
+	std_force = np.std(force_data, axis=0)
+	
+	return mean_pose, std_pose, mean_force, std_force
+
 def plot_pose_force(files, config, plots_dir):
 	"""
-	Plot ee_pose_lin_x over time and norm of measured forces on a secondary y-axis.
+	Plot ee_pose_lin_x and force norm with multi-trial support, statistics, and alignment options.
+	Supports both time-based and distance-based alignment of multiple trials.
 	"""
 	sampling_freq = config.get('data', {}).get('default_sampling_freq', 100.0)
 	plot_config = config.get('plotting', {})
+	pose_force_config = plot_config.get('pose_force', {})
 	
+	# Get configuration parameters
+	alignment_method = pose_force_config.get('alignment', 'time')
+	show_individual = pose_force_config.get('show_individual_trials', True)
+	interpolation_points = pose_force_config.get('interpolation_points', 1000)
+	show_std_bands = pose_force_config.get('std_dev_bands', True)
+	individual_alpha = pose_force_config.get('individual_alpha', 0.3)
+	
+	# Load all trials
+	logging.info(f"Loading {len(files)} trial files for multi-trial analysis")
+	all_trials = []
 	for file in files:
-		logging.info(f"Processing file: {file}")
-		df = pd.read_csv(file)
-		
-		# Create proper time axis - handle duplicate timestamps
-		if 'time' in df.columns:
-			# Check if we have duplicate timestamps
-			time_values = df['time'].values
-			if len(np.unique(time_values)) < len(time_values):
-				logging.info(f"Detected duplicate timestamps in {file}, creating sequential time axis")
-				# Create time axis assuming constant sampling rate
-				time = np.arange(len(df)) / sampling_freq  # Convert to seconds
-			else:
-				time = df['time'] - df['time'].iloc[0]  # Start from 0
-				logging.debug(f"Using original timestamps from {file}")
-		else:
-			# Fallback: create sequential time assuming default sampling frequency
-			time = np.arange(len(df)) / sampling_freq
-			logging.debug(f"No time column found, creating sequential time axis")
-			
-		pose_x = df.get('ee_pose_lin_x', None)
-		fx = df.get('fts_wrench_lin_x', None)
-		fy = df.get('fts_wrench_lin_y', None)
-		fz = df.get('fts_wrench_lin_z', None)
-		if pose_x is None or fx is None or fy is None or fz is None:
-			logging.warning(f"Missing columns in {file}, skipping.")
-			continue
-		force_norm = np.sqrt(fx**2 + fy**2 + fz**2)
-		
-		# Get plotting parameters from config
-		fig_size = plot_config.get('figure_size', [12, 6])
-		line_width = plot_config.get('line_width', 1.0)
-		grid_alpha = plot_config.get('grid_alpha', 0.3)
-		colors = plot_config.get('colors', {})
-		pose_color = colors.get('pose', 'blue')
-		force_color = colors.get('force', 'red')
-		
-		fig, ax1 = plt.subplots(figsize=fig_size)
-		ax1.set_title(f"ee_pose_lin_x and Force Norm\n{os.path.basename(file)}")
-		ax1.plot(time, pose_x, color=pose_color, label='ee_pose_lin_x', linewidth=line_width)
-		ax1.set_xlabel('Time [s]')
-		ax1.set_ylabel('ee_pose_lin_x [m]', color=pose_color)
-		ax1.tick_params(axis='y', labelcolor=pose_color)
-		ax1.grid(True, alpha=grid_alpha)
-		
-		ax2 = ax1.twinx()
-		ax2.plot(time, force_norm, color=force_color, label='Force Norm', linewidth=line_width)
-		ax2.set_ylabel('Force Norm [N]', color=force_color)
-		ax2.tick_params(axis='y', labelcolor=force_color)
-		
-		# Add legends
-		lines1, labels1 = ax1.get_legend_handles_labels()
-		lines2, labels2 = ax2.get_legend_handles_labels()
-		ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
-		
-		fig.tight_layout()
-		
-		# Handle plot display and saving
-		file_config = config.get('files', {})
-		try:
-			plt.show()
-		except Exception as e:
-			logging.error(f"Failed to show plot for {file}: {e}")
+		trial_data = load_and_process_trial(file, sampling_freq)
+		if trial_data is not None:
+			all_trials.append(trial_data)
+	
+	if not all_trials:
+		logging.error("No valid trial files found")
+		return
+	
+	logging.info(f"Successfully loaded {len(all_trials)} trials")
+	
+	# Align trials based on selected method
+	if alignment_method == 'distance':
+		logging.info("Aligning trials by distance (pose position)")
+		aligned_trials, x_axis = align_trials_by_distance(all_trials, interpolation_points)
+		x_label = 'ee_pose_lin_x [m]'
+		plot_title_suffix = "(aligned by distance)"
+	else:  # default to time
+		logging.info("Aligning trials by time")
+		aligned_trials, x_axis = align_trials_by_time(all_trials, interpolation_points)
+		x_label = 'Time [s]'
+		plot_title_suffix = "(aligned by time)"
+	
+	if not aligned_trials:
+		logging.error("Failed to align trials")
+		return
+	
+	# Calculate statistics
+	mean_pose, std_pose, mean_force, std_force = calculate_trial_statistics(aligned_trials)
+	
+	# Get plotting parameters from config
+	fig_size = plot_config.get('figure_size', [12, 6])
+	line_width = plot_config.get('line_width', 1.0)
+	grid_alpha = plot_config.get('grid_alpha', 0.3)
+	colors = plot_config.get('colors', {})
+	pose_color = colors.get('pose', 'blue')
+	force_color = colors.get('force', 'red')
+	
+	# Create the plot
+	fig, ax1 = plt.subplots(figsize=fig_size)
+	ax2 = ax1.twinx()
+	
+	# Plot individual trials (faded background)
+	if show_individual and len(aligned_trials) > 1:
+		for i, trial in enumerate(aligned_trials):
+			trial_label = os.path.basename(trial['file']).replace('.csv', '')
+			ax1.plot(x_axis, trial['pose_x'], color=pose_color, alpha=individual_alpha, 
+					linewidth=line_width*0.7, linestyle='-', 
+					label=f'Individual trials' if i == 0 else '')
+			ax2.plot(x_axis, trial['force_norm'], color=force_color, alpha=individual_alpha, 
+					linewidth=line_width*0.7, linestyle='-',
+					label=f'Individual trials' if i == 0 else '')
+	
+	# Plot mean lines
+	ax1.plot(x_axis, mean_pose, color=pose_color, linewidth=line_width*1.5, 
+			label=f'Mean ee_pose_lin_x (n={len(aligned_trials)})')
+	ax2.plot(x_axis, mean_force, color=force_color, linewidth=line_width*1.5, 
+			label=f'Mean Force Norm (n={len(aligned_trials)})')
+	
+	# Plot standard deviation bands
+	if show_std_bands and len(aligned_trials) > 1:
+		ax1.fill_between(x_axis, mean_pose - std_pose, mean_pose + std_pose, 
+						alpha=0.2, color=pose_color, label='±1 std dev (pose)')
+		ax2.fill_between(x_axis, mean_force - std_force, mean_force + std_force, 
+						alpha=0.2, color=force_color, label='±1 std dev (force)')
+	
+	# Configure axes
+	ax1.set_xlabel(x_label)
+	ax1.set_ylabel('ee_pose_lin_x [m]', color=pose_color)
+	ax1.tick_params(axis='y', labelcolor=pose_color)
+	ax1.grid(True, alpha=grid_alpha)
+	
+	ax2.set_ylabel('Force Norm [N]', color=force_color)
+	ax2.tick_params(axis='y', labelcolor=force_color)
+	
+	# Title
+	if len(aligned_trials) == 1:
+		title = f"ee_pose_lin_x and Force Norm\n{os.path.basename(aligned_trials[0]['file'])}"
+	else:
+		title = f"ee_pose_lin_x and Force Norm {plot_title_suffix}\n{len(aligned_trials)} trials"
+	ax1.set_title(title)
+	
+	# Combine legends
+	lines1, labels1 = ax1.get_legend_handles_labels()
+	lines2, labels2 = ax2.get_legend_handles_labels()
+	ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right', fontsize='small')
+	
+	fig.tight_layout()
+	
+	# Handle plot display and saving
+	file_config = config.get('files', {})
+	try:
+		plt.show()
+	except Exception as e:
+		logging.error(f"Failed to show multi-trial plot: {e}")
 
-		# Save plot if enabled
-		if file_config.get('auto_save_plots', True):
-			if not os.path.exists(plots_dir):
-				os.makedirs(plots_dir)
-			
-			if file_config.get('timestamp_plots', True):
-				run_folder = os.path.join(plots_dir, datetime.now().strftime('%Y-%m-%d_%H-%M'))
-				if not os.path.exists(run_folder):
-					os.makedirs(run_folder)
-			else:
-				run_folder = plots_dir
-				
-			plot_format = file_config.get('plot_format', 'png')
-			plot_filename = os.path.join(run_folder, os.path.basename(file).replace('.csv', f'_pose_force.{plot_format}'))
-			
-			dpi = plot_config.get('dpi', 100)
-			fig.savefig(plot_filename, dpi=dpi, bbox_inches='tight')
-			logging.info(f"Saved plot to {plot_filename}")
+	# Save plot if enabled
+	if file_config.get('auto_save_plots', True):
+		if not os.path.exists(plots_dir):
+			os.makedirs(plots_dir)
 		
-		plt.close(fig)  # Free memory
+		if file_config.get('timestamp_plots', True):
+			run_folder = os.path.join(plots_dir, datetime.now().strftime('%Y-%m-%d_%H-%M'))
+			if not os.path.exists(run_folder):
+				os.makedirs(run_folder)
+		else:
+			run_folder = plots_dir
+			
+		plot_format = file_config.get('plot_format', 'png')
+		
+		if len(aligned_trials) == 1:
+			# Single trial naming
+			plot_filename = os.path.join(run_folder, os.path.basename(aligned_trials[0]['file']).replace('.csv', f'_pose_force.{plot_format}'))
+		else:
+			# Multi-trial naming
+			timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+			plot_filename = os.path.join(run_folder, f'pose_force_multitrials_{alignment_method}_{timestamp}.{plot_format}')
+		
+		dpi = plot_config.get('dpi', 100)
+		fig.savefig(plot_filename, dpi=dpi, bbox_inches='tight')
+		logging.info(f"Saved multi-trial plot to {plot_filename}")
+	
+	plt.close(fig)  # Free memory
 
 def plot_trajectory(files, config, plots_dir):
 	"""

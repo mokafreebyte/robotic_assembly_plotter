@@ -1,5 +1,6 @@
 # inore data and results folders
 data/
+data_not_used/
 results/
 
 # ignore .venv folder
