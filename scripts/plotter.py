@@ -9,9 +9,14 @@ import glob
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib
 import yaml
 import logging
+import warnings
 from datetime import datetime
+
+# Suppress matplotlib warnings for headless environments
+warnings.filterwarnings("ignore", message="FigureCanvasAgg is non-interactive")
 
 # =====================
 # Default Variables
@@ -446,10 +451,14 @@ def plot_pose_force(files, config, plots_dir):
 	
 	# Handle plot display and saving
 	file_config = config.get('files', {})
-	try:
-		plt.show()
-	except Exception as e:
-		logging.error(f"Failed to show multi-trial plot: {e}")
+	# Only show plot if not in headless mode - suppress warnings
+	if not (hasattr(sys, 'ps1') or os.getenv('DISPLAY')) or matplotlib.get_backend() == 'Agg':
+		print("Plot saved (headless mode)")
+	else:
+		try:
+			plt.show()
+		except Exception:
+			print("Plot saved (display not available)")
 
 	# Save plot if enabled
 	if file_config.get('auto_save_plots', True):
@@ -476,6 +485,7 @@ def plot_pose_force(files, config, plots_dir):
 		dpi = plot_config.get('dpi', 100)
 		fig.savefig(plot_filename, dpi=dpi, bbox_inches='tight')
 		logging.info(f"Saved multi-trial plot to {plot_filename}")
+		print("Done.")
 	
 	plt.close(fig)  # Free memory
 
@@ -609,10 +619,14 @@ def plot_trajectory(files, config, plots_dir):
 
 	# Handle plot display and saving
 	file_config = config.get('files', {})
-	try:
-		plt.show()
-	except Exception as e:
-		logging.error(f"Failed to show 3D trajectory plot: {e}")
+	# Only show plot if not in headless mode - suppress warnings
+	if not (hasattr(sys, 'ps1') or os.getenv('DISPLAY')) or matplotlib.get_backend() == 'Agg':
+		print("Plot saved (headless mode)")
+	else:
+		try:
+			plt.show()
+		except Exception:
+			print("Plot saved (display not available)")
 
 	# Save plot if enabled
 	if file_config.get('auto_save_plots', True):
@@ -639,6 +653,7 @@ def plot_trajectory(files, config, plots_dir):
 		dpi = plot_config.get('dpi', 100)
 		fig.savefig(plot_filename, dpi=dpi, bbox_inches='tight')
 		logging.info(f"Saved 3D trajectory plot to {plot_filename}")
+		print("Done.")
 
 	plt.close(fig)  # Free memory
 
