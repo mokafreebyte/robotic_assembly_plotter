@@ -556,26 +556,51 @@ def plot_trajectory(files, config, plots_dir):
 		if show_start_markers:
 			ax.scatter(x.iloc[0], y.iloc[0], z.iloc[0], 
 					  c=marker_color, marker='^', s=50, alpha=1.0, 
-					  edgecolors='black', linewidth=1,
-					  label=f'{file_label} start')
+					  edgecolors='black', linewidth=1)
 		
 		# Add end marker (upside-down triangle) if enabled
 		if show_end_markers:
 			ax.scatter(x.iloc[-1], y.iloc[-1], z.iloc[-1], 
 					  c=marker_color, marker='v', s=50, alpha=1.0, 
-					  edgecolors='black', linewidth=1,
-					  label=f'{file_label} end')
+					  edgecolors='black', linewidth=1)
 	
 	ax.set_xlabel('ee_pose_lin_x [m]')
 	ax.set_ylabel('ee_pose_lin_y [m]')
 	ax.set_zlabel('ee_pose_lin_z [m]')
 	
+	# Create custom legend combining start/end markers for each trajectory
+	legend_elements = []
+	if show_start_markers or show_end_markers:
+		from matplotlib.lines import Line2D
+		for idx, file in enumerate(files_to_plot):
+			file_label = os.path.basename(file).replace('.csv', '')
+			marker_color = marker_colors[idx % len(marker_colors)]
+			
+			# Create legend entry based on enabled markers
+			if show_start_markers and show_end_markers:
+				# Format: "▲▼: trialname start/end"
+				legend_elements.append(Line2D([0], [0], marker='s', color=marker_color, 
+											markerfacecolor=marker_color, markersize=8,
+											linestyle='None', markeredgecolor='black',
+											label=f'▲▼: {file_label} start/end'))
+			elif show_start_markers:
+				legend_elements.append(Line2D([0], [0], marker='^', color='w', 
+											markerfacecolor=marker_color, markersize=8,
+											markeredgecolor='black',
+											label=f'{file_label} start'))
+			elif show_end_markers:
+				legend_elements.append(Line2D([0], [0], marker='v', color='w', 
+											markerfacecolor=marker_color, markersize=8,
+											markeredgecolor='black',
+											label=f'{file_label} end'))
+	
 	# Add colorbar for time - position it to avoid overlap with legend
 	if len(files_to_plot) > 0:
 		cbar = fig.colorbar(p, ax=ax, label='Time [s]', shrink=0.6, pad=0.1)
 	
-	# Add legend - position it below the plot to avoid overlap with colorbar
-	ax.legend(bbox_to_anchor=(0.5, -0.05), loc='upper center', ncol=3)
+	# Add custom legend if we have legend elements
+	if legend_elements:
+		ax.legend(handles=legend_elements, bbox_to_anchor=(0.5, -0.05), loc='upper center', ncol=3)
 	
 	if len(files_to_plot) == 1:
 		ax.set_title(f'3D Trajectory (colored by time)\n{os.path.basename(files_to_plot[0])}')
