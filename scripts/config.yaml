@@ -42,16 +42,19 @@ plotting:
   trajectory:
     point_size: 2               # Size of trajectory points
     alpha: 0.7                  # Transparency of trajectory points
-    limit_files: false          # Limit to first 5 files for trajectory plots
-  
+    limit_files: true           # Limit to first 5 files for trajectory plots
+    show_start_markers: true    # Show start markers (triangles)
+    show_end_markers: true      # Show end markers (upside-down triangles)
+
   # Pose-force plot settings (multi-trial support)
   pose_force:
-    alignment: 'time'           # 'time' or 'distance' - how to align multiple trials
+    alignment: 'distance'       # 'time' or 'distance' - how to align multiple trials
     show_individual_trials: true # Show faded individual trial lines
     interpolation_points: 1000  # Number of points for interpolation grid
     std_dev_bands: true         # Show standard deviation bands
     individual_alpha: 0.3       # Transparency for individual trial lines
-    max_duration: 7.0          # Maximum duration in seconds to plot
+    max_duration: 7.0           # Maximum duration in seconds to plot
+    max_distance: 0.15          # Maximum distance in meters to plot (for distance alignment)
 
 # ======================================================================
 # FILE HANDLING CONFIGURATION

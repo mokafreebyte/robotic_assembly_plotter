@@ -153,6 +153,43 @@ def trim_trial_duration(trial_data, max_duration):
 		'force_norm': trial_data['force_norm'][:last_valid_idx]
 	}
 
+def trim_trial_distance(trial_data, max_distance):
+	"""Trim trial data to maximum distance (pose_x range)."""
+	if max_distance is None or max_distance <= 0:
+		return trial_data
+	
+	pose_x = trial_data['pose_x']
+	start_pose = pose_x[0]
+	max_pose = start_pose + max_distance
+	
+	# Find indices where pose_x is within the distance limit
+	# Handle both increasing and decreasing pose trajectories
+	if pose_x[-1] > pose_x[0]:  # Increasing trajectory
+		trim_indices = pose_x <= max_pose
+	else:  # Decreasing trajectory
+		min_pose = start_pose - max_distance
+		trim_indices = pose_x >= min_pose
+	
+	if not np.any(trim_indices):
+		logging.warning(f"Max distance {max_distance}m is shorter than trial start")
+		return trial_data
+	
+	# Find the last valid index
+	last_valid_idx = np.where(trim_indices)[0][-1] + 1
+	
+	if last_valid_idx < len(pose_x):
+		original_distance = abs(pose_x[-1] - pose_x[0])
+		new_distance = abs(pose_x[last_valid_idx-1] - pose_x[0])
+		logging.info(f"Trimming trial {os.path.basename(trial_data['file'])} by distance: "
+					f"{original_distance:.3f}m -> {new_distance:.3f}m")
+	
+	return {
+		'file': trial_data['file'],
+		'time': trial_data['time'][:last_valid_idx],
+		'pose_x': trial_data['pose_x'][:last_valid_idx],
+		'force_norm': trial_data['force_norm'][:last_valid_idx]
+	}
+
 def align_trials_by_time(trials, interpolation_points):
 	"""Align trials by time using interpolation."""
 	if not trials:
@@ -247,6 +284,7 @@ def plot_pose_force(files, config, plots_dir):
 	show_std_bands = pose_force_config.get('std_dev_bands', True)
 	individual_alpha = pose_force_config.get('individual_alpha', 0.3)
 	max_duration = pose_force_config.get('max_duration', None)
+	max_distance = pose_force_config.get('max_distance', None)
 	
 	# Load all trials
 	logging.info(f"Loading {len(files)} trial files for multi-trial analysis")
@@ -254,9 +292,6 @@ def plot_pose_force(files, config, plots_dir):
 	for file in files:
 		trial_data = load_and_process_trial(file, sampling_freq)
 		if trial_data is not None:
-			# Apply duration trimming if configured
-			if max_duration is not None and max_duration > 0:
-				trial_data = trim_trial_duration(trial_data, max_duration)
 			all_trials.append(trial_data)
 	
 	if not all_trials:
@@ -281,7 +316,35 @@ def plot_pose_force(files, config, plots_dir):
 		logging.error("Failed to align trials")
 		return
 	
-	# Calculate statistics
+	# Apply post-alignment trimming based on method
+	if alignment_method == 'distance' and max_distance is not None and max_distance > 0:
+		# Trim aligned data to max_distance range
+		logging.info(f"Trimming aligned distance data to max_distance: {max_distance}m")
+		trim_indices = x_axis <= max_distance
+		if np.any(trim_indices):
+			last_valid_idx = np.where(trim_indices)[0][-1] + 1
+			x_axis = x_axis[:last_valid_idx]
+			for trial in aligned_trials:
+				trial['pose_x'] = trial['pose_x'][:last_valid_idx]
+				trial['force_norm'] = trial['force_norm'][:last_valid_idx]
+				if 'time' in trial:
+					trial['time'] = trial['time'][:last_valid_idx]
+			logging.info(f"Trimmed to {len(x_axis)} points, max x-axis value: {x_axis[-1]:.3f}m")
+	elif alignment_method == 'time' and max_duration is not None and max_duration > 0:
+		# Trim aligned data to max_duration range
+		logging.info(f"Trimming aligned time data to max_duration: {max_duration}s")
+		trim_indices = x_axis <= max_duration
+		if np.any(trim_indices):
+			last_valid_idx = np.where(trim_indices)[0][-1] + 1
+			x_axis = x_axis[:last_valid_idx]
+			for trial in aligned_trials:
+				trial['pose_x'] = trial['pose_x'][:last_valid_idx]
+				trial['force_norm'] = trial['force_norm'][:last_valid_idx]
+				if 'time' in trial:
+					trial['time'] = trial['time'][:last_valid_idx]
+			logging.info(f"Trimmed to {len(x_axis)} points, max x-axis value: {x_axis[-1]:.3f}s")
+	
+	# Calculate statistics after trimming
 	mean_pose, std_pose, mean_force, std_force = calculate_trial_statistics(aligned_trials)
 	
 	# Get plotting parameters from config
@@ -292,54 +355,92 @@ def plot_pose_force(files, config, plots_dir):
 	pose_color = colors.get('pose', 'blue')
 	force_color = colors.get('force', 'red')
 	
-	# Create the plot
+	# Create the plot - different layout for distance vs time alignment
 	fig, ax1 = plt.subplots(figsize=fig_size)
-	ax2 = ax1.twinx()
 	
-	# Plot individual trials (faded background)
-	if show_individual and len(aligned_trials) > 1:
-		for i, trial in enumerate(aligned_trials):
-			trial_label = os.path.basename(trial['file']).replace('.csv', '')
-			ax1.plot(x_axis, trial['pose_x'], color=pose_color, alpha=individual_alpha, 
-					linewidth=line_width*0.7, linestyle='-', 
-					label=f'Individual trials' if i == 0 else '')
-			ax2.plot(x_axis, trial['force_norm'], color=force_color, alpha=individual_alpha, 
-					linewidth=line_width*0.7, linestyle='-',
-					label=f'Individual trials' if i == 0 else '')
-	
-	# Plot mean lines
-	ax1.plot(x_axis, mean_pose, color=pose_color, linewidth=line_width*1.5, 
-			label=f'Mean ee_pose_lin_x (n={len(aligned_trials)})')
-	ax2.plot(x_axis, mean_force, color=force_color, linewidth=line_width*1.5, 
-			label=f'Mean Force Norm (n={len(aligned_trials)})')
-	
-	# Plot standard deviation bands
-	if show_std_bands and len(aligned_trials) > 1:
-		ax1.fill_between(x_axis, mean_pose - std_pose, mean_pose + std_pose, 
-						alpha=0.2, color=pose_color, label='±1 std dev (pose)')
-		ax2.fill_between(x_axis, mean_force - std_force, mean_force + std_force, 
-						alpha=0.2, color=force_color, label='±1 std dev (force)')
-	
-	# Configure axes
-	ax1.set_xlabel(x_label)
-	ax1.set_ylabel('ee_pose_lin_x [m]', color=pose_color)
-	ax1.tick_params(axis='y', labelcolor=pose_color)
-	ax1.grid(True, alpha=grid_alpha)
-	
-	ax2.set_ylabel('Force Norm [N]', color=force_color)
-	ax2.tick_params(axis='y', labelcolor=force_color)
-	
-	# Title
-	if len(aligned_trials) == 1:
-		title = f"ee_pose_lin_x and Force Norm\n{os.path.basename(aligned_trials[0]['file'])}"
+	if alignment_method == 'distance':
+		# For distance alignment, show only force (distance vs distance is redundant)
+		# Plot individual trials (faded background)
+		if show_individual and len(aligned_trials) > 1:
+			for i, trial in enumerate(aligned_trials):
+				ax1.plot(x_axis, trial['force_norm'], color=force_color, alpha=individual_alpha, 
+						linewidth=line_width*0.7, linestyle='-',
+						label=f'Individual trials' if i == 0 else '')
+		
+		# Plot mean line
+		ax1.plot(x_axis, mean_force, color=force_color, linewidth=line_width*1.5, 
+				label=f'Mean Force Norm (n={len(aligned_trials)})')
+		
+		# Plot standard deviation bands
+		if show_std_bands and len(aligned_trials) > 1:
+			ax1.fill_between(x_axis, mean_force - std_force, mean_force + std_force, 
+							alpha=0.2, color=force_color, label='±1 std dev (force)')
+		
+		# Configure axes for force-only plot
+		ax1.set_xlabel(x_label)
+		ax1.set_ylabel('Force Norm [N]', color=force_color)
+		ax1.tick_params(axis='y', labelcolor=force_color)
+		ax1.grid(True, alpha=grid_alpha)
+		
+		# No second axis needed
+		ax2 = None
+		
 	else:
-		title = f"ee_pose_lin_x and Force Norm {plot_title_suffix}\n{len(aligned_trials)} trials"
+		# For time alignment, show both pose and force (dual-axis)
+		ax2 = ax1.twinx()
+		
+		# Plot individual trials (faded background)
+		if show_individual and len(aligned_trials) > 1:
+			for i, trial in enumerate(aligned_trials):
+				ax1.plot(x_axis, trial['pose_x'], color=pose_color, alpha=individual_alpha, 
+						linewidth=line_width*0.7, linestyle='-', 
+						label=f'Individual trials' if i == 0 else '')
+				ax2.plot(x_axis, trial['force_norm'], color=force_color, alpha=individual_alpha, 
+						linewidth=line_width*0.7, linestyle='-',
+						label=f'Individual trials' if i == 0 else '')
+		
+		# Plot mean lines
+		ax1.plot(x_axis, mean_pose, color=pose_color, linewidth=line_width*1.5, 
+				label=f'Mean ee_pose_lin_x (n={len(aligned_trials)})')
+		ax2.plot(x_axis, mean_force, color=force_color, linewidth=line_width*1.5, 
+				label=f'Mean Force Norm (n={len(aligned_trials)})')
+		
+		# Plot standard deviation bands
+		if show_std_bands and len(aligned_trials) > 1:
+			ax1.fill_between(x_axis, mean_pose - std_pose, mean_pose + std_pose, 
+							alpha=0.2, color=pose_color, label='±1 std dev (pose)')
+			ax2.fill_between(x_axis, mean_force - std_force, mean_force + std_force, 
+							alpha=0.2, color=force_color, label='±1 std dev (force)')
+		
+		# Configure axes for dual-axis plot
+		ax1.set_xlabel(x_label)
+		ax1.set_ylabel('ee_pose_lin_x [m]', color=pose_color)
+		ax1.tick_params(axis='y', labelcolor=pose_color)
+		ax1.grid(True, alpha=grid_alpha)
+		
+		ax2.set_ylabel('Force Norm [N]', color=force_color)
+		ax2.tick_params(axis='y', labelcolor=force_color)
+	
+	# Title - adapt based on alignment method
+	if alignment_method == 'distance':
+		if len(aligned_trials) == 1:
+			title = f"Force vs Distance\n{os.path.basename(aligned_trials[0]['file'])}"
+		else:
+			title = f"Force vs Distance {plot_title_suffix}\n{len(aligned_trials)} trials"
+	else:
+		if len(aligned_trials) == 1:
+			title = f"ee_pose_lin_x and Force Norm\n{os.path.basename(aligned_trials[0]['file'])}"
+		else:
+			title = f"ee_pose_lin_x and Force Norm {plot_title_suffix}\n{len(aligned_trials)} trials"
 	ax1.set_title(title)
 	
-	# Combine legends
+	# Combine legends - handle both single and dual-axis cases
 	lines1, labels1 = ax1.get_legend_handles_labels()
-	lines2, labels2 = ax2.get_legend_handles_labels()
-	ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right', fontsize='small')
+	if ax2 is not None:
+		lines2, labels2 = ax2.get_legend_handles_labels()
+		ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right', fontsize='small')
+	else:
+		ax1.legend(lines1, labels1, loc='upper right', fontsize='small')
 	
 	fig.tight_layout()
 	
@@ -390,6 +491,10 @@ def plot_trajectory(files, config, plots_dir):
 	colors = plot_config.get('colors', {})
 	sampling_freq = config.get('data', {}).get('default_sampling_freq', 100.0)
 	
+	# Get marker configuration
+	show_start_markers = traj_config.get('show_start_markers', True)
+	show_end_markers = traj_config.get('show_end_markers', True)
+	
 	# Check if file limiting is enabled (default to True for backward compatibility)
 	limit_files = traj_config.get('limit_files', True)
 	
@@ -410,8 +515,8 @@ def plot_trajectory(files, config, plots_dir):
 	alpha = traj_config.get('alpha', 0.7)
 	colormap = colors.get('trajectory', 'viridis')
 	
-	# Colors for start markers (distinct colors)
-	start_marker_colors = ['red', 'green', 'blue', 'orange', 'purple']
+	# Colors for markers (distinct colors)
+	marker_colors = ['red', 'green', 'blue', 'orange', 'purple']
 	
 	for idx, file in enumerate(files_to_plot):
 		logging.info(f"Processing trajectory file: {file}")
@@ -444,12 +549,22 @@ def plot_trajectory(files, config, plots_dir):
 		p = ax.scatter(x, y, z, c=time, cmap=colormap, 
 					  s=point_size, alpha=alpha)
 		
-		# Add start marker (triangle) - only these will appear in legend
-		marker_color = start_marker_colors[idx % len(start_marker_colors)]
-		ax.scatter(x.iloc[0], y.iloc[0], z.iloc[0], 
-				  c=marker_color, marker='^', s=50, alpha=1.0, 
-				  edgecolors='black', linewidth=1,
-				  label=f'{file_label}')
+		# Get marker color for this trajectory
+		marker_color = marker_colors[idx % len(marker_colors)]
+		
+		# Add start marker (triangle) if enabled
+		if show_start_markers:
+			ax.scatter(x.iloc[0], y.iloc[0], z.iloc[0], 
+					  c=marker_color, marker='^', s=50, alpha=1.0, 
+					  edgecolors='black', linewidth=1,
+					  label=f'{file_label} start')
+		
+		# Add end marker (upside-down triangle) if enabled
+		if show_end_markers:
+			ax.scatter(x.iloc[-1], y.iloc[-1], z.iloc[-1], 
+					  c=marker_color, marker='v', s=50, alpha=1.0, 
+					  edgecolors='black', linewidth=1,
+					  label=f'{file_label} end')
 	
 	ax.set_xlabel('ee_pose_lin_x [m]')
 	ax.set_ylabel('ee_pose_lin_y [m]')
